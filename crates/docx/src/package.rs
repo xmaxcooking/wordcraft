@@ -35,6 +35,8 @@ pub mod rt {
     pub const CHART: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
     pub const DIAGRAM_DATA: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData";
     pub const DIAGRAM_DRAWING: &str = "http://schemas.microsoft.com/office/2007/relationships/diagramDrawing";
+    /// A chart's `c:externalData`: the embedded workbook package behind its baked cache.
+    pub const PACKAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/package";
 }
 
 /// `Document::passthrough` key for a macro project, kept as opaque bytes (never parsed or run).

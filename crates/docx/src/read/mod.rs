@@ -1,6 +1,7 @@
 //! DOCX → [`Document`].
 
 mod chart;
+pub(crate) mod chart_insert;
 mod diagram;
 mod drawing_color;
 mod embed;

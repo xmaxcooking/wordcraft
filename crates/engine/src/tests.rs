@@ -1356,7 +1356,7 @@ fn hostile_params_never_panic() {
     for spec in reg.all() {
         // These reach outside the session (files). Read Aloud (`review.readAloud`, `readAloud.*`)
         // is fuzzed too: under `cfg(test)` its backend is the silent `Hold`, asserted below.
-        if spec.id.starts_with("file.") || spec.id == "insert.picture" || spec.id == "insert.textFromFile" {
+        if spec.id.starts_with("file.") || spec.id == "insert.picture" || spec.id == "insert.chart" || spec.id == "insert.textFromFile" {
             continue;
         }
         for j in &junk {

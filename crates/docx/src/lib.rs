@@ -13,9 +13,12 @@ mod package;
 mod read;
 mod units;
 mod write;
+mod xlsx;
 mod xml;
 
 pub use crypt::{DEFAULT_SPIN_COUNT, MAX_PASSWORD_CHARS, check_password, decrypt, encrypt, encrypt_with_spin_count, is_encrypted};
+pub use package::{EMBEDDED_PARTS, EmbeddedManifest};
+pub use read::chart_insert::insert_chart_from_xlsx;
 pub use read::read;
 pub use write::{write, write_as};
 

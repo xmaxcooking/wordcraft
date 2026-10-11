@@ -1,5 +1,7 @@
 //! Insert tab: pages, tables, pictures, shapes, links, bookmarks, headers/footers, text, symbols.
 
+use std::sync::Arc;
+
 use serde_json::{Value, json};
 use wordcraft_doc::para::{Float, InlineObject, ShapeKind, Wrap};
 use wordcraft_doc::props::{Align, CharProps, Rgb, TabAlign, TabStop, TextColor};
@@ -25,6 +27,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("insert.coverPage", "Cover Page", "Insert › Pages", cover_page).params(r#"{"title"?: string, "subtitle"?: string, "author"?: string}"#),
         CommandSpec::new("insert.table", "Table", "Insert › Tables", table).params(r#"{"rows": n, "cols": n, "style"?: string}"#),
         CommandSpec::new("insert.picture", "Pictures", "Insert › Illustrations", picture).params(r#"{"path"?: string, "data"?: base64, "width"?: pt, "alt"?: string}"#),
+        CommandSpec::new("insert.chart", "Chart", "Insert › Illustrations", chart).params(
+            r#"{"path"?: string (.xlsx), "data"?: base64 (.xlsx), "sheet"?: string, "range"?: "A1:C4", "kind"?: "bar|line|area|pie|doughnut", "title"?: string, "width"?: pt}"#,
+        ),
         CommandSpec::new("insert.icon", "Icons", "Insert › Illustrations", icon)
             .params(r#"{"id"?: string (omit to list the library), "color"?: "RRGGBB", "size"?: pt, "query"?: string, "category"?: string}"#),
         CommandSpec::new("insert.shape", "Shapes", "Insert › Illustrations", shape)
@@ -246,6 +251,49 @@ fn place_picture(s: &mut Session, bytes: Vec<u8>, width: Option<f32>, alt: &str)
     let end = s.doc.insert_object(&at, obj, &props)?;
     s.sel = Selection { anchor: at, focus: end };
     Ok(json!({"media": key, "width": w, "height": h}))
+}
+
+/// Insert › Illustrations › Chart: a chart baked from a user's `.xlsx` workbook (or a range of
+/// one), the way Word's Insert Chart embeds the source data as a real spreadsheet package. The
+/// chart is a snapshot of the data at insertion time (see `wordcraft_docx::insert_chart_from_xlsx`
+/// for what's out of scope: no data-grid editor, no re-baking).
+fn chart(s: &mut Session, v: &Value) -> CmdResult {
+    let bytes = if let Some(d) = p::str(v, "data") {
+        base64_decode(d).ok_or_else(|| CmdError::Params("bad base64 data".into()))?
+    } else if let Some(path) = p::str(v, "path") {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::fs::read(path).map_err(|e| CmdError::Failed(format!("{path}: {e}")))?
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            return Err(CmdError::Failed("reading files by path isn't available on the web".into()));
+        }
+    } else {
+        s.ui_requests.push(json!({"open": "insertChart"}));
+        return sel_result(s);
+    };
+    let max_w = s.doc.sections().first().map(|(_, sp)| sp.text_width()).unwrap_or(468.0).max(36.0);
+    let w = p::f32(v, "width").unwrap_or(400.0).clamp(36.0, max_w);
+    let h = (w * 0.6).max(36.0);
+    let graphic = wordcraft_docx::insert_chart_from_xlsx(
+        &mut s.doc,
+        &bytes,
+        p::str(v, "sheet"),
+        p::str(v, "range"),
+        p::str(v, "kind").unwrap_or("bar"),
+        p::str(v, "title"),
+        w,
+        h,
+    )
+    .map_err(|e| CmdError::Failed(e.to_string()))?;
+    let props = s.typing_props();
+    let at = delete_selection(s)?;
+    let obj = InlineObject::Graphic { w, h, alt: String::new(), float: Float::default(), graphic: Arc::new(graphic) };
+    let end = s.doc.insert_object(&at, obj, &props)?;
+    s.sel = Selection { anchor: at, focus: end };
+    Ok(json!({"width": w, "height": h}))
 }
 
 /// Insert › Icons: a library icon (original artwork drawn in code, `wordcraft_render::icon_lib`)
@@ -657,6 +705,47 @@ mod tests {
         assert_eq!(p.props_of_char(2).font.as_deref(), Some("DejaVu Sans"), "the symbol");
         assert_eq!(p.props_of_char(5).font, None, "typing after it (byte offsets)");
         assert!(s.run("insert.symbol", &json!({"char": ""})).is_err());
+    }
+
+    /// #685: Insert › Chart bakes a chart from a user's `.xlsx`, keeps the workbook as the
+    /// chart's `externalData`, and both survive a save-and-reopen round trip.
+    #[test]
+    fn insert_chart_bakes_a_chart_and_keeps_the_workbook_through_a_save() {
+        use std::io::Write as _;
+        let workbook = br#"<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+        let workbook_rels = br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+        let sheet1 = br#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A2"/></row><row r="2"><c r="A2" t="inlineStr"><is><t>Jan</t></is></c><c r="B2"><v>10</v></c></row></sheetData></worksheet>"#;
+        let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in [
+            ("xl/workbook.xml", workbook.as_slice()),
+            ("xl/_rels/workbook.xml.rels", workbook_rels.as_slice()),
+            ("xl/worksheets/sheet1.xml", sheet1.as_slice()),
+        ] {
+            zw.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zw.write_all(bytes).unwrap();
+        }
+        let xlsx = zw.finish().unwrap().into_inner();
+
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        s.run("insert.chart", &json!({"data": base64_encode(&xlsx), "title": "Sales"})).unwrap();
+        let (_, obj) = super::super::objects::selected(&s).expect("the chart is selected");
+        assert!(matches!(obj, InlineObject::Graphic { .. }));
+
+        let saved = wordcraft_docx::write(&s.doc).unwrap();
+        let reopened = wordcraft_docx::read(&saved).unwrap();
+        let s2 = Session::new(reopened);
+        let (_, obj2) = super::super::objects::selected(&s2).expect("the chart round-trips");
+        let InlineObject::Graphic { graphic, .. } = obj2 else { panic!("expected a chart") };
+        assert!(!graphic.items.is_empty());
+        let src = graphic.source.as_ref().expect("the chart kept its embedded source");
+        let chart_ref = &src.refs[0];
+        let manifest_bytes = s2.doc.passthrough.get(wordcraft_docx::EMBEDDED_PARTS).expect("an embedded-parts manifest");
+        let manifest = wordcraft_docx::EmbeddedManifest::parse(manifest_bytes);
+        let chart_entry = manifest.parts.get(&chart_ref.target).expect("the chart part's manifest entry");
+        let xlsx_rel = chart_entry.rels.iter().find(|r| r.kind.ends_with("/package")).expect("an externalData relationship");
+        assert_eq!(s2.doc.passthrough.get(&xlsx_rel.target).map(|b| b.as_slice()), Some(xlsx.as_slice()));
+
+        assert!(s.run("insert.chart", &json!({"data": "!!!"})).is_err());
     }
 
     #[test]

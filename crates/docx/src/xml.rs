@@ -40,6 +40,7 @@ pub const NAMESPACES: &[(&str, &str)] = &[
 
 /// Namespaces that only appear in non-body parts.
 const OTHER_NAMESPACES: &[(&str, &str)] = &[
+    ("ss", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"),
     ("rel", "http://schemas.openxmlformats.org/package/2006/relationships"),
     ("ct", "http://schemas.openxmlformats.org/package/2006/content-types"),
     ("cp", "http://schemas.openxmlformats.org/package/2006/metadata/core-properties"),
